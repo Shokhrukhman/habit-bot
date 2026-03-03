@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.services.ui_state import HOME, SCREEN_NAMES, get_or_create_ui_state, save_ui_state
+from src.ui import strings as ui_str
 from src.ui.renderer import render_by_screen
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ async def ensure_screen_message(
                 user_id,
             )
             return int(ui_state.screen_message_id)
-        message = await bot.send_message(chat_id=chat_id, text="Открываю приложение...")
+        message = await bot.send_message(chat_id=chat_id, text=ui_str.OPENING_APP_TEXT)
         await save_ui_state(session, ui_state, screen_message_id=message.message_id)
         logger.info(
             "ensure_screen_message: created message_id=%s for identity=%s chat_id=%s",
@@ -75,6 +76,7 @@ async def render_screen(
             payload,
             include_back=bool(stack),
         )
+        parse_mode = "HTML" if text.startswith("<pre>") else None
 
     if not message_id:
         message_id = await ensure_screen_message(bot, chat_id, user_id, session_factory)
@@ -92,17 +94,27 @@ async def render_screen(
             message_id=message_id,
             text=text,
             reply_markup=markup,
+            parse_mode=parse_mode,
         )
         return
     except TelegramBadRequest as exc:
         error_text = str(exc).lower()
         if "message is not modified" in error_text:
             return
-        if "message to edit not found" not in error_text and "message can't be edited" not in error_text:
-            logger.exception(
-                "Unexpected edit error for user=%s, fallback to send_message",
-                user_id,
-            )
+        logger.warning(
+            "render_screen: edit failed for identity=%s chat_id=%s message_id=%s error=%s; fallback to send_message",
+            user_id,
+            chat_id,
+            message_id,
+            exc,
+        )
+    except Exception:
+        logger.exception(
+            "render_screen: unexpected edit error for identity=%s chat_id=%s message_id=%s; fallback to send_message",
+            user_id,
+            chat_id,
+            message_id,
+        )
 
     logger.info(
         "render_screen: fallback send_message chat_id=%s screen=%s identity=%s",
@@ -110,7 +122,12 @@ async def render_screen(
         screen,
         user_id,
     )
-    message = await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+    message = await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=markup,
+        parse_mode=parse_mode,
+    )
     async with session_factory() as session:
         ui_state = await get_or_create_ui_state(session, user_id)
         previous_message_id = ui_state.screen_message_id

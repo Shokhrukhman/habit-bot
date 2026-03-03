@@ -4,16 +4,27 @@ import logging
 
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.services.habits import get_or_create_user
-from src.services.ui_state import HABITS_MENU, HOME, MONTH, SETTINGS_MENU, TIMEZONE_SELECT, TODAY
+from src.services.ui_state import HABITS_LIST, HOME, MONTH, SETTINGS_MENU, TIMEZONE_SELECT, TODAY
+from src.ui import strings as ui_str
 from src.ui.navigation import render_screen
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+async def _delete_command_message_safe(message: Message) -> None:
+    if message.chat.type != "private":
+        return
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
 
 
 @router.message(CommandStart())
@@ -24,6 +35,7 @@ async def start_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     telegram_id = message.from_user.id
     chat_id = message.chat.id
     db_user_id: int | None = None
@@ -54,9 +66,9 @@ async def start_cmd(
             db_user_id,
         )
         kb = InlineKeyboardBuilder()
-        kb.button(text="📚 Привычки", callback_data="nav:habits")
-        kb.button(text="📊 Статистика", callback_data="nav:stats")
-        kb.button(text="⚙️ Настройки", callback_data="nav:settings")
+        kb.button(text=ui_str.HABITS_BUTTON, callback_data="nav:habits")
+        kb.button(text=ui_str.STATS_BUTTON, callback_data="stats:open")
+        kb.button(text=ui_str.SETTINGS_BUTTON, callback_data="nav:settings")
         kb.adjust(3)
         await message.answer(
             "HOME fallback",
@@ -72,6 +84,7 @@ async def home_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,
@@ -92,6 +105,7 @@ async def timezone_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,
@@ -110,13 +124,14 @@ async def habits_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,
         chat_id=chat_id,
         user_id=message.from_user.id,
         session_factory=session_factory,
-        screen=HABITS_MENU,
+        screen=HABITS_LIST,
     )
 
 
@@ -128,6 +143,7 @@ async def settings_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,
@@ -146,6 +162,7 @@ async def today_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,
@@ -164,6 +181,7 @@ async def month_cmd(
 ) -> None:
     if not message.from_user:
         return
+    await _delete_command_message_safe(message)
     chat_id = message.chat.id
     await render_screen(
         bot=bot,

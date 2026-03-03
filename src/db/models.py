@@ -66,7 +66,7 @@ class Habit(Base):
 
 class HabitReminderTime(Base):
     __tablename__ = "habit_reminder_times"
-    __table_args__ = (UniqueConstraint("habit_id", "time_local", name="uq_habit_time"),)
+    __table_args__ = (UniqueConstraint("habit_id", name="uq_habit_time"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     habit_id: Mapped[int] = mapped_column(ForeignKey("habits.id", ondelete="CASCADE"))

@@ -11,9 +11,10 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from src.db.models import Habit, HabitReminderTime, User
+from src.db.models import Habit, User
 from src.keyboards.habits import reminder_action_keyboard
 from src.services.logs import finalize_day_not_done, get_daily_summary
+from src.ui import strings as ui_str
 
 logger = logging.getLogger(__name__)
 
@@ -69,24 +70,36 @@ class HabitScheduler:
         for habit in user.habits:
             if not habit.is_active:
                 continue
-            for reminder in habit.reminder_times:
-                self._schedule_reminder(user.id, reminder.id, reminder.time_local.hour, reminder.time_local.minute, user.timezone)
+            reminder = (
+                min(habit.reminder_times, key=lambda item: item.time_local)
+                if habit.reminder_times
+                else None
+            )
+            if not reminder:
+                continue
+            self._schedule_reminder(
+                user.id,
+                habit.id,
+                reminder.time_local.hour,
+                reminder.time_local.minute,
+                user.timezone,
+            )
 
         logger.info("Rescheduled jobs for user_id=%s", user.id)
 
     def _schedule_reminder(
         self,
         user_id: int,
-        habit_time_id: int,
+        habit_id: int,
         hour: int,
         minute: int,
         timezone: str,
     ) -> None:
-        job_id = f"reminder:{user_id}:{habit_time_id}"
+        job_id = f"reminder:{user_id}:{habit_id}"
         self.scheduler.add_job(
             self.send_reminder_job,
             trigger=CronTrigger(hour=hour, minute=minute, second=0, timezone=timezone),
-            args=[habit_time_id],
+            args=[habit_id],
             id=job_id,
             replace_existing=True,
             coalesce=True,
@@ -114,26 +127,34 @@ class HabitScheduler:
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
 
-    async def send_reminder_job(self, habit_time_id: int) -> None:
+    async def send_reminder_job(self, habit_id: int) -> None:
         async with self.session_factory() as session:
-            reminder = await session.scalar(
-                select(HabitReminderTime)
+            habit = await session.scalar(
+                select(Habit)
                 .options(
-                    selectinload(HabitReminderTime.habit).selectinload(Habit.user),
+                    selectinload(Habit.user),
+                    selectinload(Habit.reminder_times),
                 )
-                .where(HabitReminderTime.id == habit_time_id)
+                .where(Habit.id == habit_id)
             )
-            if not reminder or not reminder.habit or not reminder.habit.user:
+            if not habit or not habit.user:
                 return
-            if not reminder.habit.is_active:
+            if not habit.is_active:
+                return
+            reminder = (
+                min(habit.reminder_times, key=lambda item: item.time_local)
+                if habit.reminder_times
+                else None
+            )
+            if not reminder:
                 return
 
-            user = reminder.habit.user
+            user = habit.user
             time_text = reminder.time_local.strftime("%H:%M")
             await self.bot.send_message(
                 chat_id=user.telegram_id,
-                text=f"🔔 {reminder.habit.title} — {time_text}",
-                reply_markup=reminder_action_keyboard(reminder.habit.id),
+                text=f"🔔 {habit.title} — {time_text}",
+                reply_markup=reminder_action_keyboard(habit.id),
             )
 
     async def send_daily_summary_job(self, user_id: int, telegram_id: int) -> None:
@@ -145,7 +166,7 @@ class HabitScheduler:
             summary = await get_daily_summary(session, user)
 
             text = (
-                "📘 Итог дня\n"
+                f"{ui_str.DAILY_SUMMARY_TITLE}\n"
                 f"✅ Done: {', '.join(summary.done) if summary.done else '-'}\n"
                 f"❌ Not done: {', '.join(summary.not_done) if summary.not_done else '-'}\n"
                 f"⏭ Skipped: {', '.join(summary.skipped) if summary.skipped else '-'}"

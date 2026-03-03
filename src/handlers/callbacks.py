@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.db.models import HabitReminderTime
 from src.db.models import HabitStatus
 from src.services.habits import (
     get_habit_by_id,
     get_or_create_user,
     get_user_by_telegram_id,
-    remove_habit_time,
     set_habit_active,
     set_user_timezone,
 )
@@ -21,6 +21,8 @@ from src.services.logs import upsert_habit_status
 from src.services.scheduler import HabitScheduler
 from src.services.timezone import is_valid_curated_timezone
 from src.services.ui_state import (
+    CALENDAR_PICKER,
+    DAY_DETAILS,
     HABIT_ADD,
     HABIT_ADD_TIME,
     HABIT_VIEW,
@@ -30,11 +32,12 @@ from src.services.ui_state import (
     MONTH,
     NOTIFICATION_SETTINGS,
     SETTINGS_MENU,
-    STATS_MENU,
+    SNOOZE_CUSTOM_INPUT,
     TIMEZONE_SELECT,
     TODAY,
     get_or_create_ui_state,
 )
+from src.ui import strings as ui_str
 from src.ui.navigation import go_back, render_current_screen, render_screen
 
 router = Router()
@@ -80,7 +83,7 @@ class CallbackRegistry:
             if data.startswith(prefix):
                 await handler(callback, bot, session_factory, scheduler, parts)
                 return
-        await callback.answer("Неизвестное действие", show_alert=True)
+        await callback.answer(ui_str.ERROR_UNKNOWN_ACTION, show_alert=True)
 
 
 registry = CallbackRegistry()
@@ -99,6 +102,20 @@ def _callback_chat_id(callback: CallbackQuery) -> int:
     if callback.from_user:
         return callback.from_user.id
     raise ValueError("Cannot determine chat_id for callback")
+
+
+async def _local_today(session: AsyncSession, telegram_id: int) -> date:
+    user = await get_user_by_telegram_id(session, telegram_id)
+    if not user:
+        return datetime.now().date()
+    return datetime.now(ZoneInfo(user.timezone)).date()
+
+
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    total = year * 12 + (month - 1) + delta
+    new_year = total // 12
+    new_month = (total % 12) + 1
+    return new_year, new_month
 
 
 @registry.exact("nav:home")
@@ -189,7 +206,7 @@ async def _nav_habits(
         chat_id=chat_id,
         user_id=callback.from_user.id,
         session_factory=session_factory,
-        screen=HABITS_MENU,
+        screen=HABITS_LIST,
     )
 
 
@@ -201,17 +218,7 @@ async def _nav_stats(
     scheduler: HabitScheduler,
     parts: list[str],
 ) -> None:
-    del scheduler, parts
-    if not callback.from_user:
-        return
-    chat_id = _callback_chat_id(callback)
-    await render_screen(
-        bot=bot,
-        chat_id=chat_id,
-        user_id=callback.from_user.id,
-        session_factory=session_factory,
-        screen=STATS_MENU,
-    )
+    await _stats_open(callback, bot, session_factory, scheduler, parts)
 
 
 @registry.exact("nav:settings")
@@ -256,8 +263,8 @@ async def _habits_list(
     )
 
 
-@registry.exact("stats:month")
-async def _stats_month(
+@registry.exact("stats:open")
+async def _stats_open(
     callback: CallbackQuery,
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
@@ -274,28 +281,30 @@ async def _stats_month(
         user_id=callback.from_user.id,
         session_factory=session_factory,
         screen=MONTH,
+        payload={},
     )
 
 
-@registry.exact("stats:day")
-async def _stats_day(
+@registry.exact("stats:month")
+async def _stats_month_legacy(
     callback: CallbackQuery,
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
     scheduler: HabitScheduler,
     parts: list[str],
 ) -> None:
-    del scheduler, parts
-    if not callback.from_user:
-        return
-    chat_id = _callback_chat_id(callback)
-    await render_screen(
-        bot=bot,
-        chat_id=chat_id,
-        user_id=callback.from_user.id,
-        session_factory=session_factory,
-        screen=TODAY,
-    )
+    await _stats_open(callback, bot, session_factory, scheduler, parts)
+
+
+@registry.exact("stats:day")
+async def _stats_day_legacy(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    await _stats_day_details(callback, bot, session_factory, scheduler, parts)
 
 
 @registry.exact("settings:timezone")
@@ -340,6 +349,28 @@ async def _settings_notifications(
     )
 
 
+@registry.exact("settings:snooze_custom")
+async def _settings_snooze_custom(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler, parts
+    if not callback.from_user:
+        return
+    chat_id = _callback_chat_id(callback)
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=SNOOZE_CUSTOM_INPUT,
+        payload={},
+    )
+
+
 @registry.prefix("notif:snooze:")
 async def _settings_snooze_value(
     callback: CallbackQuery,
@@ -354,15 +385,16 @@ async def _settings_snooze_value(
     try:
         minutes = int(parts[2])
     except ValueError:
-        await callback.answer("Некорректное значение", show_alert=True)
+        await callback.answer(ui_str.ERROR_INVALID_VALUE, show_alert=True)
         return
     if minutes <= 0 or minutes > 24 * 60:
-        await callback.answer("Недопустимое значение", show_alert=True)
+        await callback.answer(ui_str.ERROR_INVALID_RANGE_VALUE, show_alert=True)
         return
     async with session_factory() as session:
         user = await get_or_create_user(session, callback.from_user.id)
         user.snooze_minutes = minutes
         await session.commit()
+    await callback.answer(ui_str.SAVED_TEXT, show_alert=False)
     chat_id = _callback_chat_id(callback)
     await render_current_screen(bot, chat_id, callback.from_user.id, session_factory)
 
@@ -375,7 +407,7 @@ async def _legacy_nav_today(
     scheduler: HabitScheduler,
     parts: list[str],
 ) -> None:
-    await _stats_day(callback, bot, session_factory, scheduler, parts)
+    await _stats_day_details(callback, bot, session_factory, scheduler, parts)
 
 
 @registry.exact("nav:month")
@@ -386,7 +418,258 @@ async def _legacy_nav_month(
     scheduler: HabitScheduler,
     parts: list[str],
 ) -> None:
-    await _stats_month(callback, bot, session_factory, scheduler, parts)
+    await _stats_open(callback, bot, session_factory, scheduler, parts)
+
+
+@registry.exact("stats:choose_period")
+async def _stats_choose_period(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler, parts
+    if not callback.from_user:
+        return
+    chat_id = _callback_chat_id(callback)
+    async with session_factory() as session:
+        today = await _local_today(session, callback.from_user.id)
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=CALENDAR_PICKER,
+        payload={
+            "mode": "RANGE",
+            "month": today.month,
+            "year": today.year,
+            "range_pick": {"d1": None, "d2": None, "month": today.month, "year": today.year},
+        },
+    )
+
+
+@registry.exact("stats:day_details")
+async def _stats_day_details(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler, parts
+    if not callback.from_user:
+        return
+    chat_id = _callback_chat_id(callback)
+    async with session_factory() as session:
+        today = await _local_today(session, callback.from_user.id)
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=CALENDAR_PICKER,
+        payload={
+            "mode": "DETAILS",
+            "month": today.month,
+            "year": today.year,
+            "range_pick": {"d1": None, "d2": None, "month": today.month, "year": today.year},
+        },
+    )
+
+
+@registry.exact("cal:noop")
+async def _cal_noop(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del callback, bot, session_factory, scheduler, parts
+    return
+
+
+@registry.prefix("cal:prev:")
+async def _cal_prev(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler
+    if not callback.from_user or len(parts) != 3:
+        return
+    mode = parts[2]
+    chat_id = _callback_chat_id(callback)
+    async with session_factory() as session:
+        ui_state = await get_or_create_ui_state(session, callback.from_user.id)
+        payload = dict(ui_state.payload or {})
+        year = int(payload.get("year", datetime.now().year))
+        month = int(payload.get("month", datetime.now().month))
+        year, month = _shift_month(year, month, -1)
+        payload["year"] = year
+        payload["month"] = month
+        payload["mode"] = mode
+        range_pick = dict(payload.get("range_pick") or {})
+        range_pick["year"] = year
+        range_pick["month"] = month
+        payload["range_pick"] = range_pick
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=CALENDAR_PICKER,
+        payload=payload,
+        push=False,
+    )
+
+
+@registry.prefix("cal:next:")
+async def _cal_next(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler
+    if not callback.from_user or len(parts) != 3:
+        return
+    mode = parts[2]
+    chat_id = _callback_chat_id(callback)
+    async with session_factory() as session:
+        ui_state = await get_or_create_ui_state(session, callback.from_user.id)
+        payload = dict(ui_state.payload or {})
+        year = int(payload.get("year", datetime.now().year))
+        month = int(payload.get("month", datetime.now().month))
+        year, month = _shift_month(year, month, 1)
+        payload["year"] = year
+        payload["month"] = month
+        payload["mode"] = mode
+        range_pick = dict(payload.get("range_pick") or {})
+        range_pick["year"] = year
+        range_pick["month"] = month
+        payload["range_pick"] = range_pick
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=CALENDAR_PICKER,
+        payload=payload,
+        push=False,
+    )
+
+
+@registry.prefix("cal:pick:")
+async def _cal_pick(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del scheduler
+    if not callback.from_user or len(parts) != 4:
+        return
+    mode = parts[2]
+    iso_date = parts[3]
+    try:
+        picked_date = date.fromisoformat(iso_date)
+    except ValueError:
+        await callback.answer(ui_str.ERROR_INVALID_DATE, show_alert=True)
+        return
+
+    chat_id = _callback_chat_id(callback)
+    if mode == "DETAILS":
+        await render_screen(
+            bot=bot,
+            chat_id=chat_id,
+            user_id=callback.from_user.id,
+            session_factory=session_factory,
+            screen=DAY_DETAILS,
+            payload={"date": picked_date.isoformat()},
+        )
+        return
+
+    async with session_factory() as session:
+        ui_state = await get_or_create_ui_state(session, callback.from_user.id)
+        payload = dict(ui_state.payload or {})
+        range_pick = dict(payload.get("range_pick") or {})
+        d1 = range_pick.get("d1")
+        d2 = range_pick.get("d2")
+        if not d1:
+            range_pick["d1"] = picked_date.isoformat()
+            range_pick["d2"] = None
+        elif not d2:
+            range_pick["d2"] = picked_date.isoformat()
+        else:
+            range_pick["d1"] = picked_date.isoformat()
+            range_pick["d2"] = None
+
+        payload["mode"] = "RANGE"
+        payload["month"] = picked_date.month
+        payload["year"] = picked_date.year
+        range_pick["month"] = picked_date.month
+        range_pick["year"] = picked_date.year
+        payload["range_pick"] = range_pick
+
+    d1_value = range_pick.get("d1")
+    d2_value = range_pick.get("d2")
+    if not d1_value or not d2_value:
+        await render_screen(
+            bot=bot,
+            chat_id=chat_id,
+            user_id=callback.from_user.id,
+            session_factory=session_factory,
+            screen=CALENDAR_PICKER,
+            payload=payload,
+            push=False,
+        )
+        return
+
+    first = date.fromisoformat(str(d1_value))
+    second = date.fromisoformat(str(d2_value))
+    start_date = min(first, second)
+    end_date = max(first, second)
+    length = (end_date - start_date).days + 1
+    if length > 31:
+        payload["range_pick"] = {
+            "d1": None,
+            "d2": None,
+            "month": picked_date.month,
+            "year": picked_date.year,
+        }
+        await callback.answer(
+            ui_str.ERROR_RANGE_TOO_LARGE,
+            show_alert=True,
+        )
+        await render_screen(
+            bot=bot,
+            chat_id=chat_id,
+            user_id=callback.from_user.id,
+            session_factory=session_factory,
+            screen=CALENDAR_PICKER,
+            payload=payload,
+            push=False,
+        )
+        return
+
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=MONTH,
+        payload={
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        },
+    )
 
 
 @registry.prefix("tz:set:")
@@ -401,7 +684,7 @@ async def _timezone_set(
         return
     tz = ":".join(parts[2:])
     if not is_valid_curated_timezone(tz):
-        await callback.answer("Неверный timezone", show_alert=True)
+        await callback.answer(ui_str.ERROR_INVALID_TIMEZONE, show_alert=True)
         return
     async with session_factory() as session:
         await get_or_create_user(session, callback.from_user.id)
@@ -469,7 +752,7 @@ async def _habit_toggle(
     async with session_factory() as session:
         habit = await get_habit_by_id(session, habit_id)
         if not habit or not habit.user or habit.user.telegram_id != callback.from_user.id:
-            await callback.answer("Нет доступа", show_alert=True)
+            await callback.answer(ui_str.ERROR_NO_ACCESS, show_alert=True)
             return
         await set_habit_active(session, habit_id, not habit.is_active)
     await scheduler.reschedule_user_by_telegram_id(callback.from_user.id)
@@ -497,40 +780,6 @@ async def _habit_add_time(
         session_factory=session_factory,
         screen=HABIT_ADD_TIME,
         payload={"habit_id": habit_id},
-    )
-
-
-@registry.prefix("habit:del_time:")
-async def _habit_delete_time(
-    callback: CallbackQuery,
-    bot: Bot,
-    session_factory: async_sessionmaker[AsyncSession],
-    scheduler: HabitScheduler,
-    parts: list[str],
-) -> None:
-    if not callback.from_user or len(parts) != 3:
-        return
-    time_id = int(parts[2])
-    async with session_factory() as session:
-        habit_time = await session.get(HabitReminderTime, time_id)
-        if habit_time is None:
-            await callback.answer("Время не найдено", show_alert=True)
-            return
-        habit = await get_habit_by_id(session, habit_time.habit_id)
-        if not habit or not habit.user or habit.user.telegram_id != callback.from_user.id:
-            await callback.answer("Нет доступа", show_alert=True)
-            return
-        await remove_habit_time(session, time_id)
-    await scheduler.reschedule_user_by_telegram_id(callback.from_user.id)
-    chat_id = _callback_chat_id(callback)
-    await render_screen(
-        bot=bot,
-        chat_id=chat_id,
-        user_id=callback.from_user.id,
-        session_factory=session_factory,
-        screen=HABIT_VIEW,
-        payload={"habit_id": habit.id},
-        push=False,
     )
 
 
@@ -586,13 +835,13 @@ async def _today_action(
     try:
         habit_id = int(parts[2])
     except ValueError:
-        await callback.answer("Некорректный habit_id", show_alert=True)
+        await callback.answer(ui_str.ERROR_INVALID_HABIT_ID, show_alert=True)
         return
     async with session_factory() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
         habit = await get_habit_by_id(session, habit_id)
         if not user or not habit or habit.user_id != user.id:
-            await callback.answer("Нет доступа", show_alert=True)
+            await callback.answer(ui_str.ERROR_NO_ACCESS, show_alert=True)
             return
         await upsert_habit_status(session, user, habit, status)
     chat_id = _callback_chat_id(callback)
@@ -636,7 +885,7 @@ async def _legacy_reminder_snooze(
     try:
         habit_id = int(parts[2])
     except ValueError:
-        await callback.answer("Некорректный habit_id", show_alert=True)
+        await callback.answer(ui_str.ERROR_INVALID_HABIT_ID, show_alert=True)
         return
     await scheduler.schedule_snooze(callback.from_user.id, habit_id)
     chat_id = _callback_chat_id(callback)

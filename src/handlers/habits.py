@@ -8,12 +8,21 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.services.habits import (
-    add_habit_time,
     create_habit,
     get_habit_by_id,
+    get_or_create_user,
+    set_habit_time,
 )
 from src.services.scheduler import HabitScheduler
-from src.services.ui_state import HABIT_ADD, HABIT_ADD_TIME, HABIT_VIEW, get_or_create_ui_state
+from src.services.ui_state import (
+    HABIT_ADD,
+    HABIT_ADD_TIME,
+    HABIT_VIEW,
+    NOTIFICATION_SETTINGS,
+    SNOOZE_CUSTOM_INPUT,
+    get_or_create_ui_state,
+)
+from src.ui import strings as ui_str
 from src.ui.navigation import render_screen
 
 router = Router()
@@ -52,7 +61,7 @@ async def text_input_router(
         return
     if screen == HABIT_ADD_TIME:
         habit_id = payload.get("habit_id")
-        await _handle_add_time(
+        await _handle_set_time(
             message,
             bot,
             session_factory,
@@ -60,6 +69,9 @@ async def text_input_router(
             int(habit_id) if habit_id else None,
             chat_id,
         )
+        return
+    if screen == SNOOZE_CUSTOM_INPUT:
+        await _handle_custom_snooze_input(message, bot, session_factory, chat_id)
         return
 
 
@@ -72,10 +84,10 @@ async def _handle_create_habit(
 ) -> None:
     title = message.text.strip()
     if not title:
-        await message.answer("Название не может быть пустым.")
+        await message.answer(ui_str.ERR_EMPTY_HABIT_NAME)
         return
     if len(title) > 140:
-        await message.answer("Слишком длинно. Максимум 140 символов.")
+        await message.answer(ui_str.ERR_LONG_HABIT_NAME)
         return
     async with session_factory() as session:
         habit = await create_habit(session, message.from_user.id, title)
@@ -90,7 +102,7 @@ async def _handle_create_habit(
     )
 
 
-async def _handle_add_time(
+async def _handle_set_time(
     message: Message,
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
@@ -99,23 +111,19 @@ async def _handle_add_time(
     chat_id: int,
 ) -> None:
     if not habit_id:
-        await message.answer("Контекст потерян. Открой привычку заново.")
+        await message.answer(ui_str.ERR_LOST_CONTEXT)
         return
     try:
         local_time = datetime.strptime(message.text.strip(), "%H:%M").time()
     except ValueError:
-        await message.answer("Неверный формат. Используй HH:MM")
+        await message.answer(ui_str.ERR_TIME_FORMAT)
         return
     async with session_factory() as session:
         habit = await get_habit_by_id(session, habit_id)
         if not habit or not habit.user or habit.user.telegram_id != message.from_user.id:
-            await message.answer("Нет доступа к привычке.")
+            await message.answer(ui_str.ERR_NO_HABIT_ACCESS)
             return
-        try:
-            await add_habit_time(session, habit_id, local_time)
-        except Exception:
-            await message.answer("Такое время уже добавлено.")
-            return
+        await set_habit_time(session, habit_id, local_time)
     await scheduler.reschedule_user_by_telegram_id(message.from_user.id)
     await render_screen(
         bot=bot,
@@ -124,5 +132,35 @@ async def _handle_add_time(
         session_factory=session_factory,
         screen=HABIT_VIEW,
         payload={"habit_id": habit_id},
+        push=False,
+    )
+
+
+async def _handle_custom_snooze_input(
+    message: Message,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    chat_id: int,
+) -> None:
+    raw = message.text.strip()
+    try:
+        minutes = int(raw)
+    except ValueError:
+        await message.answer(ui_str.ERR_INTEGER_1_240)
+        return
+    if minutes < 1 or minutes > 240:
+        await message.answer(ui_str.ERR_RANGE_1_240)
+        return
+    async with session_factory() as session:
+        user = await get_or_create_user(session, message.from_user.id)
+        user.snooze_minutes = minutes
+        await session.commit()
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=message.from_user.id,
+        session_factory=session_factory,
+        screen=NOTIFICATION_SETTINGS,
+        payload={},
         push=False,
     )

@@ -89,23 +89,26 @@ async def get_habit_by_id(session: AsyncSession, habit_id: int) -> Habit | None:
     return await session.scalar(stmt)
 
 
-async def add_habit_time(
+async def set_habit_time(
     session: AsyncSession, habit_id: int, local_time: time
 ) -> HabitReminderTime:
-    reminder = HabitReminderTime(habit_id=habit_id, time_local=local_time)
-    session.add(reminder)
+    reminders = list(
+        await session.scalars(
+            select(HabitReminderTime).where(HabitReminderTime.habit_id == habit_id)
+        )
+    )
+    if not reminders:
+        reminder = HabitReminderTime(habit_id=habit_id, time_local=local_time)
+        session.add(reminder)
+    else:
+        reminder = min(reminders, key=lambda item: item.time_local)
+        reminder.time_local = local_time
+        for extra in reminders:
+            if extra.id != reminder.id:
+                await session.delete(extra)
     await session.commit()
     await session.refresh(reminder)
     return reminder
-
-
-async def remove_habit_time(session: AsyncSession, habit_time_id: int) -> bool:
-    reminder = await session.get(HabitReminderTime, habit_time_id)
-    if not reminder:
-        return False
-    await session.delete(reminder)
-    await session.commit()
-    return True
 
 
 async def set_habit_active(session: AsyncSession, habit_id: int, active: bool) -> Habit | None:
