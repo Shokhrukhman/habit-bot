@@ -119,3 +119,13 @@ async def set_habit_active(session: AsyncSession, habit_id: int, active: bool) -
     await session.commit()
     await session.refresh(habit)
     return habit
+
+
+async def delete_habit(session: AsyncSession, habit_id: int) -> Habit | None:
+    habit = await session.get(Habit, habit_id)
+    if not habit:
+        return None
+    habit.is_active = False
+    await session.commit()
+    await session.refresh(habit)
+    return habit

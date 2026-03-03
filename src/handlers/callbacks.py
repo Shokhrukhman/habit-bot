@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models import HabitStatus
 from src.services.habits import (
+    delete_habit,
     get_habit_by_id,
     get_or_create_user,
     get_user_by_telegram_id,
-    set_habit_active,
     set_user_timezone,
 )
 from src.services.logs import upsert_habit_status
@@ -738,8 +738,8 @@ async def _habit_view(
     )
 
 
-@registry.prefix("habit:toggle:")
-async def _habit_toggle(
+@registry.prefix("habit:delete:")
+async def _habit_delete(
     callback: CallbackQuery,
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
@@ -754,10 +754,29 @@ async def _habit_toggle(
         if not habit or not habit.user or habit.user.telegram_id != callback.from_user.id:
             await callback.answer(ui_str.ERROR_NO_ACCESS, show_alert=True)
             return
-        await set_habit_active(session, habit_id, not habit.is_active)
+        await delete_habit(session, habit_id)
     await scheduler.reschedule_user_by_telegram_id(callback.from_user.id)
     chat_id = _callback_chat_id(callback)
-    await render_current_screen(bot, chat_id, callback.from_user.id, session_factory)
+    await render_screen(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=callback.from_user.id,
+        session_factory=session_factory,
+        screen=HABITS_LIST,
+        payload={},
+        push=False,
+    )
+
+
+@registry.prefix("habit:toggle:")
+async def _habit_toggle_legacy(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    await _habit_delete(callback, bot, session_factory, scheduler, parts)
 
 
 @registry.prefix("habit:add_time:")

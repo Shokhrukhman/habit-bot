@@ -44,6 +44,7 @@ TIME_NOT_SET = "not set"
 HABIT_VIEW_TEXT = "🧩 {title}\nStatus: {status}\nTime: {time}"
 ACTIVATE_BUTTON = "▶️ Activate"
 DEACTIVATE_BUTTON = "⏸ Deactivate"
+DELETE_HABIT_BUTTON = "🗑 Delete"
 SET_TIME_BUTTON = "⏰ Set time"
 CHANGE_TIME_BUTTON = "⏰ Change time"
 

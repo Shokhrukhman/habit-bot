@@ -154,13 +154,14 @@ async def render_habits_list(
 
     habits = list(
         await session.scalars(
-            select(Habit).where(Habit.user_id == user.id).order_by(Habit.id.asc())
+            select(Habit)
+            .where(and_(Habit.user_id == user.id, Habit.is_active.is_(True)))
+            .order_by(Habit.id.asc())
         )
     )
     if habits:
         for habit in habits:
-            marker = "🟢" if habit.is_active else "⚪"
-            kb.button(text=f"{marker} {habit.title}", callback_data=f"habit:view:{habit.id}")
+            kb.button(text=f"🟢 {habit.title}", callback_data=f"habit:view:{habit.id}")
     else:
         kb.button(text=ui_str.NO_HABITS_PLACEHOLDER, callback_data="nav:habits")
 
@@ -189,9 +190,8 @@ async def render_habit_view(
     time_text = reminder.time_local.strftime("%H:%M") if reminder else ui_str.TIME_NOT_SET
     lines = [ui_str.HABIT_VIEW_TEXT.format(title=habit.title, status=status, time=time_text)]
 
-    toggle_text = ui_str.DEACTIVATE_BUTTON if habit.is_active else ui_str.ACTIVATE_BUTTON
     set_time_text = ui_str.CHANGE_TIME_BUTTON if reminder else ui_str.SET_TIME_BUTTON
-    kb.button(text=toggle_text, callback_data=f"habit:toggle:{habit.id}")
+    kb.button(text=ui_str.DELETE_HABIT_BUTTON, callback_data=f"habit:delete:{habit.id}")
     kb.button(text=set_time_text, callback_data=f"habit:add_time:{habit.id}")
     kb.adjust(2)
     return "\n".join(lines), _with_nav(kb, with_back=include_back)
