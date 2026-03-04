@@ -6,7 +6,6 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import UiState, User
-from src.services.habits import get_or_create_user
 
 HOME = "HOME"
 HABITS_MENU = "HABITS_MENU"
@@ -23,6 +22,8 @@ TODAY = "TODAY"
 MONTH = "MONTH"
 CALENDAR_PICKER = "CALENDAR_PICKER"
 DAY_DETAILS = "DAY_DETAILS"
+DEFAULT_TZ = "Asia/Tashkent"
+DEFAULT_SNOOZE = 10
 
 SCREEN_NAMES = {
     HOME,
@@ -48,18 +49,23 @@ async def get_user_by_telegram_id(session: AsyncSession, telegram_id: int) -> Us
     return await session.scalar(stmt)
 
 
-async def _resolve_user(session: AsyncSession, identity: int) -> User:
-    by_tg = await session.scalar(select(User).where(User.telegram_id == identity))
-    if by_tg:
-        return by_tg
-    by_id = await session.get(User, identity)
-    if by_id:
-        return by_id
-    return await get_or_create_user(session, identity)
+async def _resolve_user(session: AsyncSession, tg_id: int) -> User:
+    stmt: Select[tuple[User]] = select(User).where(User.telegram_id == tg_id)
+    user = (await session.execute(stmt)).scalar_one_or_none()
+    if user is not None:
+        return user
+    user = User(
+        telegram_id=tg_id,
+        timezone=DEFAULT_TZ,
+        snooze_minutes=DEFAULT_SNOOZE,
+    )
+    session.add(user)
+    await session.flush()
+    return user
 
 
-async def get_or_create_ui_state(session: AsyncSession, identity: int) -> UiState:
-    user = await _resolve_user(session, identity)
+async def get_or_create_ui_state(session: AsyncSession, tg_id: int) -> UiState:
+    user = await _resolve_user(session, tg_id)
     stmt: Select[tuple[UiState]] = select(UiState).where(UiState.user_id == user.id)
     ui_state = await session.scalar(stmt)
     if ui_state:

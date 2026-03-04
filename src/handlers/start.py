@@ -9,7 +9,6 @@ from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.services.habits import get_or_create_user
 from src.services.ui_state import HABITS_LIST, HOME, MONTH, SETTINGS_MENU, TIMEZONE_SELECT, TODAY
 from src.ui import strings as ui_str
 from src.ui.navigation import render_screen
@@ -36,23 +35,18 @@ async def start_cmd(
     if not message.from_user:
         return
     await _delete_command_message_safe(message)
-    telegram_id = message.from_user.id
+    tg_id = message.from_user.id
     chat_id = message.chat.id
-    db_user_id: int | None = None
     try:
-        async with session_factory() as session:
-            db_user = await get_or_create_user(session, telegram_id)
-            db_user_id = db_user.id
         logger.info(
-            "Command /start received: tg_id=%s chat_id=%s db_user_id=%s",
-            telegram_id,
+            "Command /start received: tg_id=%s chat_id=%s",
+            tg_id,
             chat_id,
-            db_user_id,
         )
         await render_screen(
             bot=bot,
             chat_id=chat_id,
-            user_id=db_user_id,
+            user_id=tg_id,
             session_factory=session_factory,
             screen=HOME,
             payload={},
@@ -60,10 +54,9 @@ async def start_cmd(
         )
     except Exception:
         logger.exception(
-            "Failed to render HOME via UI state: tg_id=%s chat_id=%s db_user_id=%s",
-            telegram_id,
+            "Failed to render HOME via UI state: tg_id=%s chat_id=%s",
+            tg_id,
             chat_id,
-            db_user_id,
         )
         kb = InlineKeyboardBuilder()
         kb.button(text=ui_str.HABITS_BUTTON, callback_data="nav:habits")
