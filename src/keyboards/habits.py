@@ -14,3 +14,10 @@ def reminder_action_keyboard(habit_id: int) -> InlineKeyboardMarkup:
     kb.button(text=ui_str.HOME_BUTTON, callback_data="nav:home")
     kb.adjust(2, 1, 1)
     return kb.as_markup()
+
+
+def daily_summary_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=ui_str.CLEAR_BUTTON, callback_data="summary:clear")
+    kb.adjust(1)
+    return kb.as_markup()

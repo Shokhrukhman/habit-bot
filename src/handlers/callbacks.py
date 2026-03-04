@@ -491,6 +491,24 @@ async def _cal_noop(
     return
 
 
+@registry.exact("summary:clear")
+async def _summary_clear(
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    scheduler: HabitScheduler,
+    parts: list[str],
+) -> None:
+    del session_factory, scheduler, parts
+    if not callback.message:
+        return
+    await _delete_message_safe(
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+    )
+
+
 @registry.prefix("cal:prev:")
 async def _cal_prev(
     callback: CallbackQuery,

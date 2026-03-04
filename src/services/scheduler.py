@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from src.db.models import Habit, User
-from src.keyboards.habits import reminder_action_keyboard
+from src.keyboards.habits import daily_summary_keyboard, reminder_action_keyboard
 from src.services.logs import finalize_day_not_done, get_daily_summary
 from src.ui import strings as ui_str
 
@@ -171,7 +171,11 @@ class HabitScheduler:
                 f"❌ Not done: {', '.join(summary.not_done) if summary.not_done else '-'}\n"
                 f"⏭ Skipped: {', '.join(summary.skipped) if summary.skipped else '-'}"
             )
-            await self.bot.send_message(chat_id=telegram_id, text=text)
+            await self.bot.send_message(
+                chat_id=telegram_id,
+                text=text,
+                reply_markup=daily_summary_keyboard(),
+            )
 
     async def schedule_snooze(self, telegram_id: int, habit_id: int) -> None:
         snooze_minutes = 10

@@ -10,6 +10,7 @@ SETTINGS_BUTTON = "⚙️ Settings"
 CHOOSE_PERIOD_BUTTON = "📅 Choose period"
 DAY_DETAILS_BUTTON = "🔎 Day details"
 CUSTOM_SNOOZE_BUTTON = "✍️ Custom"
+CLEAR_BUTTON = "Clear"
 
 HOME_TEXT = "Welcome to your habit app.\nChoose a section:"
 HABITS_TITLE = "📋 Habits"
