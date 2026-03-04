@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from src.config import load_settings
 from src.db.session import create_engine, create_session_factory
-from src.handlers import callbacks, habits, start
+from src.handlers import admin, callbacks, habits, start
 from src.services.scheduler import HabitScheduler, set_scheduler_instance
 
 
@@ -43,6 +43,7 @@ async def run(check_only: bool = False) -> None:
     dp = Dispatcher()
     dp.include_router(start.router)
     dp.include_router(callbacks.router)
+    dp.include_router(admin.router)
     dp.include_router(habits.router)
 
     scheduler = HabitScheduler(bot=bot, session_factory=session_factory)
@@ -50,7 +51,12 @@ async def run(check_only: bool = False) -> None:
     await scheduler.start()
 
     try:
-        await dp.start_polling(bot, session_factory=session_factory, scheduler=scheduler)
+        await dp.start_polling(
+            bot,
+            session_factory=session_factory,
+            scheduler=scheduler,
+            settings=settings,
+        )
     finally:
         await scheduler.shutdown()
         await bot.session.close()

@@ -1,3 +1,3 @@
-from src.handlers import callbacks, habits, start
+from src.handlers import admin, callbacks, habits, start
 
-__all__ = ["start", "habits", "callbacks"]
+__all__ = ["start", "habits", "callbacks", "admin"]
